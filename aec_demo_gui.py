@@ -1,5 +1,4 @@
 import sys
-import time
 import pyaudio
 import numpy as np
 from pyaec import Aec
