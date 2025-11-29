@@ -7,6 +7,8 @@ from PyQt6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout,
                              QComboBox, QGroupBox)
 from PyQt6.QtCore import QThread, pyqtSignal, Qt
 
+from nlms import SimpleNLMS
+
 
 class AudioWorker(QThread):
     # Tín hiệu gửi trạng thái và lỗi về giao diện
@@ -25,12 +27,16 @@ class AudioWorker(QThread):
         self.channels = 1
         self.rate = 16000
         self.frame_size = 160  # 10ms
-        self.filter_length = int(self.rate * 0.4)  # Độ trễ lọc tối đa 0.4s
+        self.filter_length = int(self.rate * 0.2)  # Độ trễ lọc tối đa 0.2s
+
+        # Cách 1: sử dụng thư viện pyaec: Khởi tạo AEC (đảm bảo nó nằm trong luồng run())
+        # self.aec = Aec(self.frame_size, self.filter_length, self.rate, False)
+
+        # Cách 2: Tự implement theo công thức nlms:
+        self.nlms = SimpleNLMS(filter_length=self.filter_length, mu=0.1)
 
     def run(self):
         p = pyaudio.PyAudio()
-        # Khởi tạo AEC (đảm bảo nó nằm trong luồng run())
-        aec = Aec(self.frame_size, self.filter_length, self.rate, False)
 
         in_stream = None
         out_stream = None
@@ -54,7 +60,7 @@ class AudioWorker(QThread):
 
             self.status_update.emit("Đang chạy Loopback...")
 
-            # Buffer tham chiếu rỗng ban đầu (160 mẫu * 2 bytes/mẫu)
+            # Buffer tham chiếu rỗng ban đầu (x mẫu * 2 bytes/mẫu)
             last_output_bytes = b'\x00' * self.frame_size * 2
 
             while self.is_running:
@@ -71,10 +77,25 @@ class AudioWorker(QThread):
 
                     # 3. Xử lý AEC
                     if self.use_aec:
-                        processed_samples = aec.cancel_echo(in_samples, ref_samples)
+                        # # ============================
+                        # # Cách 1: sử dụng thư viện pyaec
+                        # processed_samples = self.aec.cancel_echo(in_samples, ref_samples)
+                        # out_data = np.array(processed_samples, dtype=np.int16).tobytes()
 
-                        # Fix: Chuyển List thành Numpy Array kiểu int16 rồi mới tobytes
-                        out_data = np.array(processed_samples, dtype=np.int16).tobytes()
+                        # ============================
+                        # Cách 2: sử dụng NLMS tự code:
+                        # Thuật toán NLMS cần số thực, không phải số nguyên 16-bit.
+                        mic_float = in_samples.astype(np.float32)
+                        ref_float = ref_samples.astype(np.float32)
+
+                        # Gọi hàm process của class tự viết
+                        out_samples_float = self.nlms.process(mic_float, ref_float)
+                        # Clip giá trị để tránh tràn số khi convert ngược lại int16
+                        out_samples_float = np.clip(out_samples_float, -32768, 32767)
+
+                        # Chuyển lại int16 để phát ra loa
+                        out_data = out_samples_float.astype(np.int16).tobytes()
+
                     else:
                         out_data = in_data
 
